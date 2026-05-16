@@ -109,8 +109,9 @@ newTask:{time:'',zone:'三期',task:'',type:'關閉',shifts:[]},
 let unsub=null,audioCtx=null,clkIv=null,cdIv=null,toastTm=null;
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
-function toMin(t){const[h,m]=t.split(':').map(Number);return h<6?h*60+m+1440:h*60+m}
-function nowMin(){const n=new Date(),h=n.getHours(),m=n.getMinutes();return h<6?h*60+m+1440:h*60+m}
+// 晚班的 06:xx–11:xx 是隔天早上，需要 +1440 才不會誤判逾時
+function toMin(t){const[h,m]=t.split(':').map(Number);if(S.shift==='late'&&h>=6&&h<12)return h*60+m+1440;return h<6?h*60+m+1440:h*60+m}
+function nowMin(){const n=new Date(),h=n.getHours(),m=n.getMinutes();if(S.shift==='late'&&h>=6&&h<12)return h*60+m+1440;return h<6?h*60+m+1440:h*60+m}
 function nowTs(){return new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false})}
 function todayStr(){return new Date().toISOString().split('T')[0]}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -386,15 +387,22 @@ function rPatrol(){
         <button id="expBtn" style="font-size:14px;padding:8px 15px;border-radius:12px;background:${allDone?'var(--ok)':'var(--pri)'};border:none;color:#fff;font-weight:700;">${allDone?'✅ 完成複製':'📋 匯出LINE'}</button>
       </div>
     </div>
-    ${vo.length?`<div style="margin-bottom:10px;">
-      <div style="font-size:15px;color:var(--dim);margin-bottom:7px;">目前打卡人員：</div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;flex:1;">
-          ${vo.map(o=>{const ri=S.officers.indexOf(o);return`<button class="pill off-pill${S.curIdx===ri?' on':''}" data-oi="${ri}">${esc(o)}</button>`}).join('')}
+    ${vo.length>=2?`<div style="margin-bottom:10px;">
+      <div style="background:rgba(249,115,22,.12);border:2px solid var(--pri);border-radius:14px;padding:11px 14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-size:12px;color:var(--pri);font-weight:700;letter-spacing:1px;margin-bottom:2px;">👤 目前打卡人員</div>
+          <div style="font-size:24px;font-weight:800;color:#fff;">${esc(S.officers[S.curIdx]?.trim()||'')}</div>
         </div>
         <button id="handoff" style="flex-shrink:0;padding:11px 15px;border-radius:12px;background:#1a2a1a;border:1.5px solid var(--ok);color:var(--ok);font-size:15px;font-weight:700;white-space:nowrap;">✋ 交接</button>
       </div>
-    </div>`:''}
+      <div style="font-size:13px;color:var(--dim);margin-bottom:6px;">切換人員 →</div>
+      <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;">
+        ${vo.map(o=>{const ri=S.officers.indexOf(o);return`<button class="pill off-pill${S.curIdx===ri?' on':''}" data-oi="${ri}">${esc(o)}</button>`}).join('')}
+      </div>
+    </div>`:(vo.length===1?`<div style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-size:17px;color:var(--dim);">👤 <span style="color:#fff;font-weight:700;">${esc(vo[0])}</span></div>
+      <button id="handoff" style="padding:11px 15px;border-radius:12px;background:#1a2a1a;border:1.5px solid var(--ok);color:var(--ok);font-size:15px;font-weight:700;">✋ 交接</button>
+    </div>`:'')}
     <div style="display:flex;gap:6px;">
       <button class="ftab${S.filter==='all'?' on':''}" data-f="all">全部</button>
       <button class="ftab${S.filter==='pending'?' on':''}" data-f="pending">待執行</button>
@@ -514,6 +522,11 @@ function rAdmin(){
     <div style="font-size:15px;color:#fed7aa;">${esc(S.community)}</div>
   </div>
   <div class="content2">
+    <div style="background:#1a1a07;border:2px solid var(--warn);border-radius:14px;padding:16px;margin-bottom:14px;">
+      <div style="font-size:16px;font-weight:700;color:var(--warn);margin-bottom:6px;">⚠️ Firebase 規則到期提醒</div>
+      <div style="font-size:14px;color:#fef08a;margin-bottom:10px;">測試模式將於 <strong>2026-06-15</strong> 到期。到期前請到 Firebase Console → Firestore → 規則，將規則更新為永久版本：</div>
+      <div style="background:#0f0f00;border-radius:8px;padding:10px;font-family:monospace;font-size:12px;color:#fef08a;line-height:1.8;margin-bottom:10px;">rules_version = '2';<br>service cloud.firestore {<br>&nbsp;&nbsp;match /databases/{db}/documents {<br>&nbsp;&nbsp;&nbsp;&nbsp;match /sessions/{sid} {<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read, write: if true;<br>&nbsp;&nbsp;&nbsp;&nbsp;}<br>&nbsp;&nbsp;}<br>}</div>
+    </div>
     <div class="card">
       <div style="font-size:17px;font-weight:700;color:var(--pri);margin-bottom:12px;">🏢 社區名稱</div>
       <input class="input" id="aCom" value="${esc(S.community)}">
