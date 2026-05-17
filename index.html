@@ -44,6 +44,8 @@ input,textarea,select{font-family:inherit;font-size:18px;-webkit-text-size-adjus
 .pill.on{border-color:var(--pri);background:rgba(249,115,22,.15);color:var(--pri)}
 .ftab{padding:8px 16px;border-radius:20px;border:1px solid var(--bdr);background:transparent;color:var(--dim);font-size:15px;cursor:pointer;transition:all .2s}
 .ftab.on{border-color:var(--pri);background:rgba(249,115,22,.15);color:var(--pri)}
+.ztab{padding:7px 14px;border-radius:20px;border:1.5px solid var(--bdr);background:transparent;color:var(--dim);font-size:14px;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:all .2s}
+.ztab.zon{font-weight:700;}
 .tc{border-radius:14px;margin-bottom:12px;overflow:hidden;border:2px solid}
 .tc.done{background:#052e16;border-color:var(--ok)}
 .tc.overdue{background:#2d0a0a;border-color:var(--err)}
@@ -65,7 +67,7 @@ firebase.initializeApp(firebaseConfig);
 const db=firebase.firestore();
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const PIN='1234';
+let PIN=localStorage.getItem('adminPin')||'1234';
 const ZC={'外哨':'#fb923c','三期':'#60a5fa','四期':'#a78bfa','外圍':'#34d399','電錶':'#f87171','其他':'#9ca3af'};
 const TI={'開啟':'💡','關閉':'🔌','抄表':'📸','巡查':'👁️'};
 const SC={early:'#fb923c',late:'#8b5cf6'};
@@ -96,14 +98,14 @@ shift:null,officers:[''],curIdx:0,
 sessionId:null,
 tasks:JSON.parse(localStorage.getItem('tasks')||'null')||DEFTASKS,
 checkins:{},notes:{},
-countdowns:{},alerted:{},
-filter:'all',
+countdowns:{},alerted:{},sessionStartMin:null,
+filter:'all',zoneFilter:'all',
 exportTxt:'',handoffTxt:'',
 showPin:false,pinTarget:null,pinTaskId:null,
 showExport:false,
 loading:false,editing:false,
 syncStatus:'offline',
-newTask:{time:'',zone:'三期',task:'',type:'關閉',shifts:[]},
+newTask:{time:'',zone:'三期',task:'',type:'關閉',shifts:[],instruction:''},
 };
 
 let unsub=null,audioCtx=null,clkIv=null,cdIv=null,toastTm=null;
@@ -113,7 +115,13 @@ let unsub=null,audioCtx=null,clkIv=null,cdIv=null,toastTm=null;
 function toMin(t){const[h,m]=t.split(':').map(Number);if(S.shift==='late'&&h>=6&&h<12)return h*60+m+1440;return h<6?h*60+m+1440:h*60+m}
 function nowMin(){const n=new Date(),h=n.getHours(),m=n.getMinutes();if(S.shift==='late'&&h>=6&&h<12)return h*60+m+1440;return h<6?h*60+m+1440:h*60+m}
 function nowTs(){return new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false})}
-function todayStr(){return new Date().toISOString().split('T')[0]}
+function todayStr(){
+  const d=new Date();
+  // 晚班凌晨（00:00-11:59）仍屬昨天的班次
+  if(S.shift==='late'&&d.getHours()<12)d.setDate(d.getDate()-1);
+  // 使用本地日期（非UTC），避免台灣UTC+8時差造成session分裂
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function canChk(t){return nowMin()>=toMin(t.time)-3}
 function status(t){
@@ -183,7 +191,7 @@ async function startSession(){
         if(!S.editing&&(S.screen==='patrol'||S.screen==='standby'))rerender();
       }
     },()=>{S.syncStatus='offline'});
-    S.loading=false;S.screen='patrol';S.syncStatus='online';
+    S.loading=false;S.screen='patrol';S.syncStatus='online';S.sessionStartMin=nowMin();
     localStorage.setItem('com',S.community);
     startTimers();render();
   }catch(e){
@@ -224,7 +232,7 @@ async function doReset(){
     await db.collection('sessions').doc(S.sessionId).update({checkins:{},notes:{},status:'reset',resetAt:firebase.firestore.FieldValue.serverTimestamp()});
     S.countdowns={};S.alerted={};
     toast('✅ 今日記錄已重置');
-    S.screen='login';S.shift=null;S.sessionId=null;S.checkins={};S.notes={};
+    S.screen='login';S.shift=null;S.sessionId=null;S.checkins={};S.notes={};S.sessionStartMin=null;
     stopTimers();if(unsub){unsub();unsub=null;}
     render();
   }catch(e){toast('❌ 重置失敗：'+e.message)}
@@ -238,7 +246,7 @@ function startTimers(){
     if(el)el.textContent=new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
     if(S.screen==='patrol'){
       shiftTasks().forEach(t=>{
-        if(!S.checkins[t.id]&&!S.alerted[t.id]&&nowMin()-toMin(t.time)>=15){
+        if(!S.checkins[t.id]&&!S.alerted[t.id]&&nowMin()-toMin(t.time)>=15&&(S.sessionStartMin===null||toMin(t.time)>=S.sessionStartMin-2)){
           playAlert();S.alerted[t.id]=true;
           toast('⚠️ '+t.time+' ['+t.zone+'] 逾時未執行！');
         }
@@ -364,7 +372,7 @@ function rLogin(){
 function rPatrol(){
   const st=shiftTasks(),done=st.filter(t=>S.checkins[t.id]).length;
   const prog=st.length?Math.round(done/st.length*100):0,allDone=st.length>0&&done===st.length;
-  const disp=st.filter(t=>S.filter==='pending'?!S.checkins[t.id]:S.filter==='done'?!!S.checkins[t.id]:true);
+  const disp=st.filter(t=>{const sm=S.filter==='pending'?!S.checkins[t.id]:S.filter==='done'?!!S.checkins[t.id]:true;const zm=S.zoneFilter==='all'||t.zone===S.zoneFilter;return sm&&zm;});
   const sc=SC[S.shift],sl=SL[S.shift],vo=validOfficers();
   const clk=new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
   return`<div>${topbar()}
@@ -403,11 +411,15 @@ function rPatrol(){
       <div style="font-size:17px;color:var(--dim);">👤 <span style="color:#fff;font-weight:700;">${esc(vo[0])}</span></div>
       <button id="handoff" style="padding:11px 15px;border-radius:12px;background:#1a2a1a;border:1.5px solid var(--ok);color:var(--ok);font-size:15px;font-weight:700;">✋ 交接</button>
     </div>`:'')}
-    <div style="display:flex;gap:6px;">
+    <div style="display:flex;gap:6px;margin-bottom:8px;">
       <button class="ftab${S.filter==='all'?' on':''}" data-f="all">全部</button>
       <button class="ftab${S.filter==='pending'?' on':''}" data-f="pending">待執行</button>
       <button class="ftab${S.filter==='done'?' on':''}" data-f="done">已完成</button>
       <button id="pAdmin" style="margin-left:auto;padding:8px 14px;border-radius:20px;border:1px solid var(--bdr);background:transparent;color:var(--dim);font-size:15px;">🔐 主管</button>
+    </div>
+    <div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;">
+      <button class="ztab${S.zoneFilter==='all'?' zon':''}" data-z="all">📍 全區</button>
+      ${[...new Set(st.map(t=>t.zone))].map(z=>`<button class="ztab${S.zoneFilter===z?' zon':''}" data-z="${z}" style="color:${ZC[z]||'#9ca3af'};${S.zoneFilter===z?'border-color:'+(ZC[z]||'#9ca3af')+';background:'+(ZC[z]||'#9ca3af')+'22;':''}">${z}</button>`).join('')}
     </div>
   </div>
   <div class="content">
@@ -448,6 +460,7 @@ function rTask(t){
         ${early?`<div style="font-size:15px;color:var(--dim);margin-top:5px;">🔒 ${t.time} 前3分鐘才可執行</div>`:''}
         ${ck&&inGrace?`<div id="grace-${t.id}" style="font-size:15px;color:var(--warn);font-weight:700;margin-top:5px;">⚠️ 點圓圈可取消（<span id="cd-${t.id}">${S.countdowns[t.id]}</span>秒）</div>`:''}
         ${ck&&!inGrace?`<div id="done-${t.id}" style="font-size:15px;color:var(--ok);font-weight:700;margin-top:5px;">✓ ${ck.time} · ${esc(ck.officer)}</div>`:''}
+        ${t.instruction?`<div style="font-size:14px;color:#fde68a;margin-top:6px;background:#1c1a05;padding:7px 11px;border-radius:6px;border-left:3px solid #fbbf24;">📍 ${esc(t.instruction)}</div>`:''}
         ${S.notes[t.id]?`<div style="font-size:15px;color:var(--acc);margin-top:7px;background:var(--bg);padding:6px 11px;border-radius:6px;border-left:3px solid var(--acc);">📝 ${esc(S.notes[t.id])}</div>`:''}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:7px;flex-shrink:0;">
@@ -532,6 +545,13 @@ function rAdmin(){
       <input class="input" id="aCom" value="${esc(S.community)}">
       <button id="saveCom" style="width:100%;padding:14px;border-radius:10px;background:var(--pri);border:none;color:#fff;font-size:16px;font-weight:700;margin-top:10px;">儲存名稱</button>
     </div>
+    <div class="card">
+      <div style="font-size:17px;font-weight:700;color:var(--pri);margin-bottom:12px;">🔐 修改主管PIN碼</div>
+      <div style="font-size:14px;color:var(--dim);margin-bottom:10px;">目前PIN碼：${'●'.repeat(PIN.length)}（${PIN.length}位）</div>
+      <input type="password" class="input" id="newPin1" placeholder="新PIN碼（建議4–6位數字）" style="margin-bottom:8px;" maxlength="10">
+      <input type="password" class="input" id="newPin2" placeholder="再輸入一次確認" style="margin-bottom:10px;" maxlength="10">
+      <button id="savePin" style="width:100%;padding:14px;border-radius:10px;background:var(--pri);border:none;color:#fff;font-size:16px;font-weight:700;">儲存新PIN碼</button>
+    </div>
     <div style="background:#2d0a0a;border:1px solid #7f1d1d;border-radius:14px;padding:18px;margin-bottom:14px;">
       <div style="font-size:17px;font-weight:700;color:var(--err);margin-bottom:6px;">🔄 重置今日記錄</div>
       <div style="font-size:15px;color:#7f1d1d;margin-bottom:14px;">Firebase 上的資料也會同步清除，執行前請先匯出</div>
@@ -544,7 +564,8 @@ function rAdmin(){
         <select class="input" id="nZone" style="flex-shrink:0;">${Object.keys(ZC).map(z=>`<option${ns.zone===z?' selected':''}>${z}</option>`).join('')}</select>
         <select class="input" id="nType" style="flex-shrink:0;">${Object.keys(TI).map(t=>`<option${ns.type===t?' selected':''}>${t}</option>`).join('')}</select>
       </div>
-      <input class="input" id="nDesc" value="${esc(ns.task)}" placeholder="任務說明..." style="margin-bottom:10px;">
+      <input class="input" id="nDesc" value="${esc(ns.task)}" placeholder="任務說明..." style="margin-bottom:8px;">
+      <textarea class="input" id="nInst" placeholder="📍 巡邏注意事項（選填，機動人員會看到）" style="height:72px;resize:none;margin-bottom:10px;">${esc(ns.instruction||'')} </textarea>
       <div style="font-size:15px;color:var(--dim);margin-bottom:8px;">適用班別：</div>
       <div style="display:flex;gap:10px;margin-bottom:14px;">
         <button class="nsBtn" data-ns="early" style="flex:1;padding:13px;border-radius:10px;border:2px solid ${ns.shifts.includes('early')?'#fb923c':'var(--bdr)'};background:${ns.shifts.includes('early')?'rgba(251,146,60,.15)':'transparent'};color:${ns.shifts.includes('early')?'#fb923c':'var(--dim)'};font-size:16px;font-weight:700;">☀️ 早班</button>
@@ -561,7 +582,8 @@ function rAdmin(){
             <span class="zone-tag" style="background:${(ZC[t.zone]||'#9ca3af')}22;color:${ZC[t.zone]||'#9ca3af'};">${t.zone}</span>
             <span style="font-size:14px;color:var(--dim);">${t.shifts.map(s=>({early:'早',late:'晚'}[s])).join('/')}班</span>
           </div>
-          <div style="font-size:16px;color:var(--dim);line-height:1.5;">${esc(t.task)}</div>
+          <div style="font-size:16px;color:var(--dim);line-height:1.5;margin-bottom:6px;">${esc(t.task)}</div>
+          <input class="instEdit" data-tid="${t.id}" value="${esc(t.instruction||'')}" placeholder="📍 注意事項（留空則不顯示）" style="width:100%;background:var(--bg);border:1px solid var(--bdr);border-radius:8px;color:#fde68a;padding:8px 10px;font-size:14px;font-family:inherit;">
         </div>
         <button class="delTask" data-tid="${t.id}" style="flex-shrink:0;background:#2d0a0a;border:1px solid #7f1d1d;border-radius:8px;color:var(--err);padding:10px 14px;font-size:15px;">刪除</button>
       </div>`).join('')}
@@ -580,7 +602,7 @@ function rPin(){
     <button id="pinOK" style="flex:1;padding:17px;border-radius:12px;background:var(--pri);border:none;color:#fff;font-size:18px;font-weight:700;">確認</button>
     <button id="pinCancel" style="flex:1;padding:17px;border-radius:12px;background:transparent;border:1px solid var(--bdr);color:var(--dim);font-size:18px;">取消</button>
   </div>
-  <div style="font-size:13px;color:var(--dim);text-align:center;margin-top:12px;">預設 PIN：1234</div>
+
   </div></div>`;
 }
 
@@ -655,6 +677,7 @@ function bind(){
     document.querySelectorAll('.off-pill').forEach(p=>p.classList.toggle('on',+p.dataset.oi===S.curIdx));
   });});
   document.querySelectorAll('.ftab').forEach(b=>{b.addEventListener('click',e=>{S.filter=e.currentTarget.dataset.f;rerender();});});
+  document.querySelectorAll('.ztab').forEach(b=>{b.addEventListener('click',e=>{S.zoneFilter=e.currentTarget.dataset.z;rerender();});});
   document.querySelectorAll('.noteBtn').forEach(b=>{b.addEventListener('click',e=>{
     const id=e.currentTarget.dataset.tid,ne=document.getElementById('ne-'+id);
     if(ne){const show=ne.style.display==='none';ne.style.display=show?'block':'none';if(show){const ta=document.getElementById('ni-'+id);if(ta){ta.focus();S.editing=true;}}}
@@ -683,7 +706,7 @@ function bind(){
   if(endShift)endShift.addEventListener('click',()=>{
     if(confirm('確定結案？將返回登入畫面，打卡記錄仍保留在 Firebase。')){
       stopTimers();if(unsub){unsub();unsub=null;}
-      S.screen='login';S.shift=null;S.sessionId=null;S.checkins={};S.notes={};S.countdowns={};S.alerted={};
+      S.screen='login';S.shift=null;S.sessionId=null;S.checkins={};S.notes={};S.countdowns={};S.alerted={};S.sessionStartMin=null;
       render();
     }
   });
@@ -696,6 +719,22 @@ function bind(){
     const v=document.getElementById('aCom')?.value||'';
     S.community=v;localStorage.setItem('com',v);toast('✅ 社區名稱已儲存');
   });
+  const savePin=document.getElementById('savePin');
+  if(savePin)savePin.addEventListener('click',()=>{
+    const p1=document.getElementById('newPin1')?.value||'';
+    const p2=document.getElementById('newPin2')?.value||'';
+    if(!p1){toast('請輸入新PIN碼');return;}
+    if(p1.length<4){toast('PIN碼至少需要4位');return;}
+    if(p1!==p2){toast('❌ 兩次輸入不一致，請重新輸入');
+      document.getElementById('newPin1').value='';
+      document.getElementById('newPin2').value='';
+      return;}
+    PIN=p1;localStorage.setItem('adminPin',p1);
+    document.getElementById('newPin1').value='';
+    document.getElementById('newPin2').value='';
+    toast('✅ PIN碼已更新，請記妥新碼');
+    rerender();
+  });
   const doRst=document.getElementById('doReset');
   if(doRst)doRst.addEventListener('click',()=>{
     if(!S.sessionId){toast('目前沒有進行中的班次');return;}
@@ -703,7 +742,7 @@ function bind(){
   });
   document.querySelectorAll('.nsBtn').forEach(b=>{b.addEventListener('click',e=>{
     const ns=e.currentTarget.dataset.ns;
-    if(!S.newTask)S.newTask={time:'',zone:'三期',task:'',type:'關閉',shifts:[]};
+    if(!S.newTask)S.newTask={time:'',zone:'三期',task:'',type:'關閉',shifts:[],instruction:''};
     if(S.newTask.shifts.includes(ns))S.newTask.shifts=S.newTask.shifts.filter(s=>s!==ns);
     else S.newTask.shifts.push(ns);
     rerender();
@@ -715,11 +754,22 @@ function bind(){
     const type=document.getElementById('nType')?.value||'關閉';
     const task=document.getElementById('nDesc')?.value||'';
     const shifts=S.newTask?.shifts||[];
+    const instruction=document.getElementById('nInst')?.value.trim()||'';
     if(!time||!task||!shifts.length){toast('請填寫時間、說明並選擇班別');return;}
-    S.tasks.push({id:String(Date.now()),time,zone,task,type,shifts});
+    S.tasks.push({id:String(Date.now()),time,zone,task,type,shifts,instruction});
     localStorage.setItem('tasks',JSON.stringify(S.tasks));
-    S.newTask={time:'',zone:'三期',task:'',type:'關閉',shifts:[]};
+    S.newTask={time:'',zone:'三期',task:'',type:'關閉',shifts:[],instruction:''};
     toast('✅ 任務已新增');rerender();
+  });
+  document.querySelectorAll('.instEdit').forEach(inp=>{
+    inp.addEventListener('focus',()=>S.editing=true);
+    inp.addEventListener('blur',e=>{
+      S.editing=false;
+      const tid=e.target.dataset.tid;
+      const val=e.target.value.trim();
+      const task=S.tasks.find(t=>t.id===tid);
+      if(task){task.instruction=val;localStorage.setItem('tasks',JSON.stringify(S.tasks));toast('✅ 注意事項已儲存');}
+    });
   });
   document.querySelectorAll('.delTask').forEach(b=>{b.addEventListener('click',e=>{
     if(confirm('確定刪除此任務？')){
